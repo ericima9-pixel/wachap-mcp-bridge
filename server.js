@@ -3,25 +3,32 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 
-const WACHAP_BASE = "https://wachap.app/api";
-const DEFAULT_ACCESS_TOKEN = process.env.WACHAP_ACCESS_TOKEN || "";
-const DEFAULT_INSTANCE_ID = process.env.WACHAP_INSTANCE_ID || "";
+// --- Nouvelle infrastructure WaChap (migration wachap.app -> wachap.com, juillet 2026) ---
+const WACHAP_BASE = "https://api.wachap.com/v1";
+const DEFAULT_SECRET_KEY = process.env.WACHAP_ACCESS_TOKEN || ""; // sk_...
+const DEFAULT_ACCOUNT_ID = process.env.WACHAP_INSTANCE_ID || ""; // UUID du compte (ex: d5de4c8b-...)
 
 // Stockage en mémoire des événements reçus via webhook (messages entrants)
 const inboxEvents = [];
 const MAX_EVENTS = 200;
 
-function buildUrl(path, params) {
-  const url = new URL(`${WACHAP_BASE}/${path}`);
-  Object.entries(params).forEach(([k, v]) => {
-    if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
-  });
-  return url.toString();
+function creds(accountId, secretKey) {
+  return {
+    accountId: accountId || DEFAULT_ACCOUNT_ID,
+    secretKey: secretKey || DEFAULT_SECRET_KEY,
+  };
 }
 
-async function wachapGet(path, params) {
-  const url = buildUrl(path, params);
-  const res = await fetch(url);
+async function wachapPost(path, secretKey, body) {
+  const url = `${WACHAP_BASE}/${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${secretKey}`,
+    },
+    body: JSON.stringify(body),
+  });
   const text = await res.text();
   try {
     return { httpStatus: res.status, data: JSON.parse(text) };
@@ -30,11 +37,20 @@ async function wachapGet(path, params) {
   }
 }
 
-function creds(instance_id, access_token) {
-  return {
-    instance_id: instance_id || DEFAULT_INSTANCE_ID,
-    access_token: access_token || DEFAULT_ACCESS_TOKEN,
-  };
+async function wachapGetReq(path, secretKey, params = {}) {
+  const url = new URL(`${WACHAP_BASE}/${path}`);
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
+  });
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${secretKey}` },
+  });
+  const text = await res.text();
+  try {
+    return { httpStatus: res.status, data: JSON.parse(text) };
+  } catch {
+    return { httpStatus: res.status, raw: text };
+  }
 }
 
 function textResult(obj) {
@@ -42,153 +58,152 @@ function textResult(obj) {
 }
 
 function getServer() {
-  const server = new McpServer({ name: "wachap-mcp-bridge", version: "1.0.0" });
+  const server = new McpServer({ name: "wachap-mcp-bridge", version: "2.0.0" });
 
+  // --- Envoyer un message à un contact (texte, image, audio, vidéo, document, localisation, contact) ---
   server.registerTool(
     "wachap_send_message",
     {
       title: "Envoyer un message WhatsApp à un contact",
-      description: "Envoie un message texte à un numéro WhatsApp via WaChap.",
+      description:
+        "Envoie un message (texte, image, audio, vidéo, document, localisation ou contact) à un numéro WhatsApp via WaChap.",
       inputSchema: {
-        number: z.string().describe("Numéro international sans + (ex: 22670000000)"),
-        message: z.string().describe("Texte du message"),
-        instance_id: z.string().optional().describe("Optionnel si défini par défaut sur le serveur"),
-        access_token: z.string().optional(),
+        number: z.string().describe("Numéro international avec + (ex: +22670000000)"),
+        type: z
+          .enum(["text", "image", "audio", "video", "document", "location", "contact"])
+          .default("text")
+          .describe("Type de message"),
+        content: z.string().optional().describe("Texte du message (requis si type=text)"),
+        imageUrl: z.string().optional(),
+        audioUrl: z.string().optional(),
+        videoUrl: z.string().optional(),
+        documentUrl: z.string().optional(),
+        fileName: z.string().optional(),
+        caption: z.string().optional(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+        locationName: z.string().optional(),
+        address: z.string().optional(),
+        accountId: z.string().optional().describe("Optionnel si défini par défaut sur le serveur"),
+        access_token: z.string().optional().describe("Secret Key WaChap, optionnel si défini par défaut"),
       },
     },
-    async ({ number, message, instance_id, access_token }) => {
-      const c = creds(instance_id, access_token);
-      const result = await wachapGet("send", { number, type: "text", message, ...c });
-      return textResult(result);
-    }
-  );
-
-  server.registerTool(
-    "wachap_send_media",
-    {
-      title: "Envoyer un média WhatsApp à un contact",
-      description: "Envoie une image/fichier avec un message à un numéro WhatsApp via WaChap.",
-      inputSchema: {
-        number: z.string(),
-        message: z.string().optional(),
-        media_url: z.string().describe("URL publique du média"),
-        filename: z.string().optional().describe("Nom du fichier, requis pour les documents"),
-        instance_id: z.string().optional(),
-        access_token: z.string().optional(),
-      },
-    },
-    async ({ number, message, media_url, filename, instance_id, access_token }) => {
-      const c = creds(instance_id, access_token);
-      const result = await wachapGet("send", {
-        number,
-        type: "media",
-        message: message || "",
-        media_url,
-        filename,
-        ...c,
+    async ({
+      number,
+      type,
+      content,
+      imageUrl,
+      audioUrl,
+      videoUrl,
+      documentUrl,
+      fileName,
+      caption,
+      latitude,
+      longitude,
+      locationName,
+      address,
+      accountId,
+      access_token,
+    }) => {
+      const c = creds(accountId, access_token);
+      const result = await wachapPost("whatsapp/messages/send", c.secretKey, {
+        data: {
+          accountId: c.accountId,
+          to: number,
+          type,
+          content,
+          imageUrl,
+          audioUrl,
+          videoUrl,
+          documentUrl,
+          fileName,
+          caption,
+          latitude,
+          longitude,
+          name: locationName,
+          address,
+        },
       });
       return textResult(result);
     }
   );
 
+  // --- Envoyer un message dans un groupe ---
   server.registerTool(
     "wachap_send_group_message",
     {
       title: "Envoyer un message dans un groupe WhatsApp",
-      description: "Envoie un message texte dans un groupe WhatsApp via WaChap.",
+      description:
+        "Envoie un message (texte, image, vidéo, document, audio) dans un groupe WhatsApp via WaChap.",
       inputSchema: {
-        group_id: z.string().describe("ID du groupe, format xxxxx-xxxxx@g.us"),
-        message: z.string(),
-        instance_id: z.string().optional(),
+        group_id: z.string().describe("ID du groupe, format xxxxx@g.us"),
+        type: z
+          .enum(["text", "image", "video", "document", "audio", "location", "contact"])
+          .default("text"),
+        content: z.string().optional().describe("Texte du message (requis si type=text)"),
+        imageUrl: z.string().optional(),
+        caption: z.string().optional(),
+        accountId: z.string().optional(),
         access_token: z.string().optional(),
       },
     },
-    async ({ group_id, message, instance_id, access_token }) => {
-      const c = creds(instance_id, access_token);
-      const result = await wachapGet("send_group", { group_id, type: "text", message, ...c });
-      return textResult(result);
-    }
-  );
-
-  server.registerTool(
-    "wachap_send_group_media",
-    {
-      title: "Envoyer un média dans un groupe WhatsApp",
-      description: "Envoie une image/fichier avec un message dans un groupe WhatsApp via WaChap.",
-      inputSchema: {
-        group_id: z.string(),
-        message: z.string().optional(),
-        media_url: z.string(),
-        filename: z.string().optional(),
-        instance_id: z.string().optional(),
-        access_token: z.string().optional(),
-      },
-    },
-    async ({ group_id, message, media_url, filename, instance_id, access_token }) => {
-      const c = creds(instance_id, access_token);
-      const result = await wachapGet("send_group", {
-        group_id,
-        type: "media",
-        message: message || "",
-        media_url,
-        filename,
-        ...c,
+    async ({ group_id, type, content, imageUrl, caption, accountId, access_token }) => {
+      const c = creds(accountId, access_token);
+      const result = await wachapPost("whatsapp/groups/send", c.secretKey, {
+        accountId: c.accountId,
+        groupJid: group_id,
+        type,
+        content,
+        imageUrl,
+        caption,
       });
       return textResult(result);
     }
   );
 
+  // --- Lister les groupes ---
   server.registerTool(
     "wachap_get_groups",
     {
       title: "Lister les groupes WhatsApp",
-      description: "Récupère la liste des groupes WhatsApp de l'instance connectée (utile pour retrouver un group_id).",
+      description:
+        "Récupère la liste des groupes WhatsApp du compte connecté (utile pour retrouver un group_id/jid).",
       inputSchema: {
-        instance_id: z.string().optional(),
+        accountId: z.string().optional(),
         access_token: z.string().optional(),
       },
     },
-    async ({ instance_id, access_token }) => {
-      const c = creds(instance_id, access_token);
-      const result = await wachapGet("get_groups", c);
+    async ({ accountId, access_token }) => {
+      const c = creds(accountId, access_token);
+      const result = await wachapPost("whatsapp/groups/list", c.secretKey, {
+        accountId: c.accountId,
+      });
       return textResult(result);
     }
   );
 
+  // --- Lister les comptes WhatsApp connectés ---
   server.registerTool(
-    "wachap_get_qrcode",
+    "wachap_get_accounts",
     {
-      title: "Obtenir le QR code de connexion WhatsApp",
-      description: "Récupère le QR code pour connecter ou reconnecter une instance WhatsApp WaChap.",
+      title: "Lister les comptes WhatsApp connectés",
+      description: "Récupère tous les comptes WhatsApp connectés à l'instance WaChap (avec leur statut).",
       inputSchema: {
-        instance_id: z.string().optional(),
+        status: z
+          .enum(["connected", "disconnected", "connecting", "error"])
+          .optional()
+          .describe("Filtrer par statut de connexion"),
         access_token: z.string().optional(),
       },
     },
-    async ({ instance_id, access_token }) => {
-      const c = creds(instance_id, access_token);
-      const result = await wachapGet("get_qrcode", c);
+    async ({ status, access_token }) => {
+      const c = creds(undefined, access_token);
+      const result = await wachapGetReq("whatsapp/accounts", c.secretKey, { status });
       return textResult(result);
     }
   );
 
-  server.registerTool(
-    "wachap_reconnect",
-    {
-      title: "Reconnecter l'instance WhatsApp",
-      description: "Force la reconnexion de l'instance WhatsApp en cas de perte de connexion WaChap.",
-      inputSchema: {
-        instance_id: z.string().optional(),
-        access_token: z.string().optional(),
-      },
-    },
-    async ({ instance_id, access_token }) => {
-      const c = creds(instance_id, access_token);
-      const result = await wachapGet("reconnect", c);
-      return textResult(result);
-    }
-  );
-
+  // --- Messages entrants (webhook) ---
   server.registerTool(
     "wachap_get_recent_inbox",
     {
@@ -252,5 +267,5 @@ app.get("/mcp", (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`WaChap MCP bridge en écoute sur le port ${PORT}`);
+  console.log(`WaChap MCP bridge (v2 - api.wachap.com/v1) en écoute sur le port ${PORT}`);
 });

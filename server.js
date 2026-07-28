@@ -258,6 +258,7 @@ function getServer() {
         accountId: c.accountId,
         type,
         content,
+        caption: content,
         imageUrl,
         videoUrl,
         backgroundColor,

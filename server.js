@@ -253,8 +253,10 @@ function getServer() {
       access_token,
     }) => {
       const c = creds(accountId, access_token);
+      const type = videoUrl ? "video" : imageUrl ? "image" : "text";
       const result = await wachapPost("whatsapp/status/post", c.secretKey, {
         accountId: c.accountId,
+        type,
         content,
         imageUrl,
         videoUrl,

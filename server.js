@@ -221,6 +221,51 @@ function getServer() {
     }
   );
 
+  // --- Publier un statut WhatsApp (texte, image ou vidéo) ---
+  server.registerTool(
+    "wachap_post_status",
+    {
+      title: "Publier un statut WhatsApp",
+      description:
+        "Publie un statut WhatsApp (texte, image ou vidéo, avec légende) via WaChap.",
+      inputSchema: {
+        content: z.string().optional().describe("Texte du statut"),
+        imageUrl: z.string().optional().describe("URL de l'image (statut image + texte)"),
+        videoUrl: z.string().optional().describe("URL de la vidéo (statut vidéo + texte)"),
+        backgroundColor: z.string().optional().describe("Couleur de fond, ex: #7B2CBF"),
+        font: z.number().optional(),
+        privacyType: z
+          .string()
+          .optional()
+          .describe("Ex: all_contacts, contacts_except, only_share_with"),
+        accountId: z.string().optional(),
+        access_token: z.string().optional(),
+      },
+    },
+    async ({
+      content,
+      imageUrl,
+      videoUrl,
+      backgroundColor,
+      font,
+      privacyType,
+      accountId,
+      access_token,
+    }) => {
+      const c = creds(accountId, access_token);
+      const result = await wachapPost("whatsapp/status/post", c.secretKey, {
+        accountId: c.accountId,
+        content,
+        imageUrl,
+        videoUrl,
+        backgroundColor,
+        font,
+        privacyType: privacyType || "all_contacts",
+      });
+      return textResult(result);
+    }
+  );
+
   return server;
 }
 
